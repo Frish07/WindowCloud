@@ -1,0 +1,7 @@
+.build-tools/
+artifacts/
+**/bin/
+**/obj/
+.vs/
+*.user
+oauth-clients.json
