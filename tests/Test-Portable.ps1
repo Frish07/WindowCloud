@@ -19,6 +19,17 @@ try {
     if ($runtime.framework -or $runtime.frameworks -or 'Microsoft.WindowsDesktop.App' -notin $runtime.includedFrameworks.name) {
         throw 'Expected a self-contained Windows Desktop runtime.'
     }
+    $assemblyBytes = [IO.File]::ReadAllBytes((Join-Path $testRoot 'WindowCloud.dll'))
+    $assembly = [Reflection.Assembly]::Load($assemblyBytes)
+    $icon = $assembly.GetManifestResourceStream('WindowCloud.TrayIcon')
+    if (!$icon) { throw 'The WindowCloud tray icon was not embedded.' }
+    try {
+        $reader = [IO.BinaryReader]::new($icon)
+        if ($reader.ReadUInt16() -ne 0 -or $reader.ReadUInt16() -ne 1 -or $reader.ReadUInt16() -lt 2) {
+            throw 'Expected a Windows icon with multiple resolutions.'
+        }
+    }
+    finally { $icon.Dispose() }
 
     Add-Type -TypeDefinition @'
 using System;

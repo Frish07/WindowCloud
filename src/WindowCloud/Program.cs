@@ -13,7 +13,10 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         try
         {
-            using var tray = new Tray();
+            using var iconResource = typeof(Program).Assembly.GetManifestResourceStream("WindowCloud.TrayIcon")
+                ?? throw new InvalidOperationException("Не удалось загрузить значок WindowCloud.");
+            using var icon = new Icon(iconResource, SystemInformation.SmallIconSize);
+            using var tray = new Tray(icon);
             Application.Run(tray);
         }
         catch (Exception error)
@@ -38,7 +41,7 @@ internal sealed class Tray : ApplicationContext
     private bool checking;
     private bool pending;
 
-    public Tray()
+    public Tray(Icon icon)
     {
         cloud = new Cloud(accounts);
         server = new ExplorerServer(accounts, cloud);
@@ -47,7 +50,7 @@ internal sealed class Tray : ApplicationContext
         _ = dispatcher.Handle;
         menu.Items.Add("Настройки", null, (_, _) => ShowSettings());
         menu.Items.Add("Выход", null, (_, _) => ExitThread());
-        tray = new NotifyIcon { Text = "WindowCloud", Icon = SystemIcons.Application, ContextMenuStrip = menu, Visible = true };
+        tray = new NotifyIcon { Text = "WindowCloud", Icon = icon, ContextMenuStrip = menu, Visible = true };
         tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowSettings(); };
         timer.Tick += (_, _) => RefreshExplorer();
         NetworkChange.NetworkAvailabilityChanged += NetworkChanged;
