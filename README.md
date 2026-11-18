@@ -49,4 +49,6 @@ Maintainers can set the repository Actions variable `WINDOWCLOUD_OAUTH_CLIENTS` 
 
 On Windows x64, install the .NET 10 SDK and Zig 0.15.2, then run `./build.ps1 -SelfContained`. The script writes a self-contained ZIP to `artifacts`. The Windows workflow builds and extracts the ZIP, verifies that the File Explorer DLL loads, and checks that the background app starts with the bundled .NET runtime. [GitHub Actions workflow](https://github.com/Frish07/WindowCloud/actions/workflows/windows.yml)
 
+Upload tests simulate the three cloud APIs, including chunked transfers, empty files, cancellation and failures. Shell tests check recursive file descriptors, streamed bytes and the upload target. Native clipboard Paste checks run when the required desktop Shell classes are registered; the test reports when the host lacks them.
+
 The background app, user interface, and cloud clients are written in C#. The native C++ module implements the File Explorer interfaces and forwards requests to the app through a named pipe scoped to the current user.

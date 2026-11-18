@@ -45,7 +45,7 @@ jobs:
       - name: Verify upload protocols and folder uploads
         shell: pwsh
         run: dotnet run --project tests/WindowCloud.Tests -c Release
-      - name: Verify File Explorer folder copy and upload target
+      - name: Verify folder transfer data and upload target
         shell: pwsh
         run: ./tests/Test-Shell.ps1 -Archive ./artifacts/WindowCloud-win-x64-self-contained.zip
       - name: Launch and verify the extracted ZIP

@@ -368,6 +368,7 @@ HRESULT makeShellDataObject(REFGUID account, std::vector<Item> items, PCIDLIST_A
     auto hr = makeDataObject(account, std::move(items), IID_IDataObject, reinterpret_cast<void**>(&inner));
     if (FAILED(hr)) return hr;
     hr = SHCreateDataObject(parent, count, children, inner, iid, out);
+    if (hr == REGDB_E_CLASSNOTREG) hr = inner->QueryInterface(iid, out);
     inner->Release();
     return hr;
 }

@@ -31,6 +31,42 @@ struct ClipboardRestore {
     ClipboardRestore() { OleGetClipboard(&previous.value); }
     ~ClipboardRestore() { OleSetClipboard(previous.value); }
 };
+class LocalFiles final : public IDataObject, public ComObject {
+    HGLOBAL paths;
+public:
+    explicit LocalFiles(HGLOBAL paths) : paths(paths) {}
+    ~LocalFiles() override { GlobalFree(paths); }
+    COM_REFCOUNT
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDataObject) return E_NOINTERFACE;
+        *out = static_cast<IDataObject*>(this);
+        AddRef();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        return format && format->cfFormat == CF_HDROP && (format->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_FORMATETC;
+    }
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        if (FAILED(QueryGetData(format))) return DV_E_FORMATETC;
+        *medium = {};
+        medium->hGlobal = OleDuplicateData(paths, CF_HDROP, 0);
+        medium->tymed = TYMED_HGLOBAL;
+        return medium->hGlobal ? S_OK : E_OUTOFMEMORY;
+    }
+    HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** out) override {
+        if (direction != DATADIR_GET) return E_NOTIMPL;
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        return SHCreateStdEnumFmtEtc(1, &format, out);
+    }
+    HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+};
 template<class T> void send(HANDLE pipe, const T& value) {
     DWORD count{};
     require(WriteFile(pipe, &value, sizeof(value), &count, nullptr) && count == sizeof(value), "Write pipe value");
@@ -202,6 +238,11 @@ int wmain(int argc, wchar_t** args) {
         require(argc == 3, "Expected DLL and temporary directory paths");
         check(OleInitialize(nullptr), "Initialize OLE");
         ClipboardRestore restoreClipboard;
+        Com<IDataObject> systemData;
+        auto availability = SHCreateDataObject(nullptr, 0, nullptr, nullptr, IID_IDataObject, systemData.out());
+        bool desktop = availability != REGDB_E_CLASSNOTREG;
+        if (desktop) check(availability, "System Shell data object");
+        else std::puts("System Shell data-object class is unregistered. Desktop Paste checks are unavailable on this host.");
         auto temporary = fs::path(args[2]);
         fs::create_directory(temporary / "output");
         MockCloud mock(fs::absolute(args[1]));
@@ -224,6 +265,14 @@ int wmain(int argc, wchar_t** args) {
         const ITEMIDLIST* selection[] = {cloudFolder.get()};
         Com<IDataObject> clipboard;
         check(account->GetUIObjectOf(nullptr, 1, selection, IID_IDataObject, nullptr, clipboard.out()), "Get cloud folder data object");
+        if (desktop) {
+            Com<IDataObject> registeredSource;
+            auto sourceStatus = SHCreateDataObject(root.get(), 1, selection, clipboard.value, IID_IDataObject, registeredSource.out());
+            if (sourceStatus == REGDB_E_CLASSNOTREG) {
+                desktop = false;
+                std::puts("Registered Shell source class is unavailable. Verifying descriptors, file streams and upload target.");
+            } else check(sourceStatus, "System Shell source object");
+        }
         FORMATETC descriptor{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW)),
             nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
         STGMEDIUM medium{};
@@ -231,8 +280,34 @@ int wmain(int argc, wchar_t** args) {
         auto group = static_cast<FILEGROUPDESCRIPTORW*>(GlobalLock(medium.hGlobal));
         require(group && group->cItems == 6, "Folder descriptors include all descendants");
         require(group->fgd[0].dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY, "Directory attribute");
+        std::vector<LONG> fileIndexes;
+        std::vector<uint64_t> sizes;
+        for (UINT index = 0; index < group->cItems; ++index) {
+            if (group->fgd[index].dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            fileIndexes.push_back(static_cast<LONG>(index));
+            sizes.push_back((static_cast<uint64_t>(group->fgd[index].nFileSizeHigh) << 32) | group->fgd[index].nFileSizeLow);
+        }
         GlobalUnlock(medium.hGlobal);
         ReleaseStgMedium(&medium);
+        for (size_t i = 0; i < fileIndexes.size(); ++i) {
+            FORMATETC contents{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILECONTENTS)),
+                nullptr, DVASPECT_CONTENT, fileIndexes[i], TYMED_ISTREAM};
+            check(clipboard->GetData(&contents, &medium), "Read indexed file contents");
+            ULONG count{};
+            uint64_t position{};
+            std::array<BYTE, 4096> buffer;
+            HRESULT result;
+            do {
+                result = medium.pstm->Read(buffer.data(), static_cast<ULONG>(buffer.size()), &count);
+                check(result, "Read file stream");
+                for (ULONG j = 0; j < count; ++j) require(buffer[j] == (position + j) % 251, "Stream bytes");
+                position += count;
+            } while (result == S_OK);
+            ReleaseStgMedium(&medium);
+            require(position == sizes[i], "Stream size");
+        }
+        std::puts("Recursive descriptors and indexed file bytes verified.");
+        if (desktop) {
         check(OleSetClipboard(clipboard.value), "Set cloud folder clipboard");
         pasteInto(temporary / "output");
         auto output = temporary / "output" / "Cloud folder";
@@ -250,6 +325,7 @@ int wmain(int argc, wchar_t** args) {
         require(input.get() == EOF, "Downloaded file size");
         check(OleSetClipboard(nullptr), "Clear clipboard");
         std::puts("Native Paste copied nested files, empty folders, Unicode names and filename collisions.");
+        }
         Com<IShellFolder> destination;
         check(account->BindToObject(cloudFolder.get(), nullptr, IID_IShellFolder, destination.out()), "Bind cloud destination");
         Com<IDropTarget> target;
@@ -265,9 +341,7 @@ int wmain(int argc, wchar_t** args) {
         std::memcpy(reinterpret_cast<BYTE*>(files) + sizeof(DROPFILES), path.c_str(), (path.size() + 1) * 2);
         GlobalUnlock(medium.hGlobal);
         Com<IDataObject> local;
-        check(SHCreateDataObject(nullptr, 0, nullptr, nullptr, IID_IDataObject, local.out()), "Create local data object");
-        FORMATETC drop{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-        check(local->SetData(&drop, &medium, TRUE), "Set local paths");
+        local.value = new LocalFiles(medium.hGlobal);
         DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
         check(target->DragEnter(local.value, 0, {}, &effect), "Accept local folder drag");
         require(effect == DROPEFFECT_COPY, "Only copy offered");
@@ -275,6 +349,7 @@ int wmain(int argc, wchar_t** args) {
         require(effect == DROPEFFECT_COPY, "Folder upload accepted");
         mock.verifyUploads(path);
         std::puts("Cloud drop target forwards a local folder to the background upload operation.");
+        if (desktop) {
         check(OleSetClipboard(local.value), "Set local clipboard for cloud Paste");
         Com<IContextMenu> background;
         check(destination->CreateViewObject(nullptr, IID_IContextMenu, background.out()), "Cloud background menu");
@@ -284,6 +359,7 @@ int wmain(int argc, wchar_t** args) {
         mock.verifyUploads(path, 2);
         check(OleSetClipboard(nullptr), "Clear local clipboard");
         std::puts("Native Paste into the cloud folder queues the upload.");
+        }
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
