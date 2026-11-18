@@ -5,12 +5,13 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ApplicationIcon>WindowCloud.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="WindowCloud.ico" LogicalName="WindowCloud.TrayIcon" />
+    <InternalsVisibleTo Include="WindowCloud.Tests" />
   </ItemGroup>
 </Project>

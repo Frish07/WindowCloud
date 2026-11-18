@@ -43,7 +43,7 @@ struct Reader {
 };
 }
 
-bool Pipe::open(REFGUID account, BYTE command, std::wstring_view id, uint64_t offset) {
+bool Pipe::open(REFGUID account, BYTE command, std::wstring_view id, uint64_t offset, bool waitForResponse) {
     close();
     if (id.size() > 2048) return false;
     wchar_t path[100]{};
@@ -69,7 +69,8 @@ bool Pipe::open(REFGUID account, BYTE command, std::wstring_view id, uint64_t of
     append(position, offset);
     BYTE status = 1;
     if (!transfer(header.data(), static_cast<DWORD>(header.size()), false) ||
-        !transfer(const_cast<wchar_t*>(id.data()), length, false) || !read(status) || status != 0) {
+        !transfer(const_cast<wchar_t*>(id.data()), length, false) ||
+        (waitForResponse && (!read(status) || status != 0))) {
         close();
         return false;
     }

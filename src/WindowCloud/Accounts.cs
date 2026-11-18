@@ -11,7 +11,8 @@ internal sealed record ClientRegistration(string Id, string? DesktopSecret);
 internal sealed record Token(string Access, string Refresh, DateTimeOffset Expires);
 internal sealed record Identity(string Id, string Label, string Root, string? Namespace = null);
 
-internal sealed record Account(Guid Id, Provider Provider, Identity Identity, ClientRegistration Client, Token Token)
+internal sealed record Account(Guid Id, Provider Provider, Identity Identity, ClientRegistration Client, Token Token,
+    bool CanWrite = false)
 {
     public string DisplayName => $"{Provider.Label()} ({Identity.Label})";
 }
@@ -24,12 +25,13 @@ internal static class ProviderNames
 internal sealed class Accounts
 {
     private readonly object gate = new();
-    private readonly string file = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WindowCloud", "accounts.dat");
+    private readonly string file;
     private List<Account> accounts;
 
-    public Accounts()
+    public Accounts(string? path = null)
     {
+        file = path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WindowCloud", "accounts.dat");
         if (!File.Exists(file))
         {
             accounts = [];
@@ -49,7 +51,7 @@ internal sealed class Accounts
         lock (gate)
         {
             var existing = accounts.Find(a => a.Provider == provider && a.Identity.Id == identity.Id);
-            var account = new Account(existing?.Id ?? Guid.NewGuid(), provider, identity, client, token);
+            var account = new Account(existing?.Id ?? Guid.NewGuid(), provider, identity, client, token, CanWrite: true);
             Persist([.. accounts.Where(a => a.Id != account.Id), account]);
             return account;
         }

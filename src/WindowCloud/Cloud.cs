@@ -8,8 +8,9 @@ namespace WindowCloud;
 internal sealed record Item(string Id, string Name, bool Folder, bool Copyable, long? Size,
     DateTimeOffset? Modified, string? CopyName = null);
 
-internal sealed class Cloud(Accounts accounts)
+internal sealed partial class Cloud(Accounts accounts, HttpClient? httpClient = null)
 {
+    private readonly HttpClient http = httpClient ?? OAuth.Http;
     private const string Google = "https://www.googleapis.com/drive/v3/";
     private const string Graph = "https://graph.microsoft.com/v1.0/";
     private const string Dropbox = "https://api.dropboxapi.com/2/";
@@ -160,7 +161,7 @@ internal sealed class Cloud(Accounts accounts)
         return response;
     }
 
-    private static async Task<HttpRequestMessage> GoogleDownload(string id, string token, CancellationToken cancellation)
+    private async Task<HttpRequestMessage> GoogleDownload(string id, string token, CancellationToken cancellation)
     {
         var url = Google + "files/" + Esc(id);
         using var json = await GetJson(url + "?fields=mimeType", token, cancellation);
@@ -216,7 +217,7 @@ internal sealed class Cloud(Accounts accounts)
     private static DateTimeOffset? Date(JsonElement value, string field) =>
         DateTimeOffset.TryParse(value.Text(field), out var date) ? date : null;
 
-    private static async Task<JsonDocument> GetJson(string url, string token, CancellationToken cancellation)
+    private async Task<JsonDocument> GetJson(string url, string token, CancellationToken cancellation)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -225,7 +226,7 @@ internal sealed class Cloud(Accounts accounts)
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellation), cancellationToken: cancellation);
     }
 
-    private static async Task<JsonDocument> DropboxJson(string route, string token, string? ns, object? args,
+    private async Task<JsonDocument> DropboxJson(string route, string token, string? ns, object? args,
         CancellationToken cancellation)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, Dropbox + route);
@@ -244,12 +245,16 @@ internal sealed class Cloud(Accounts accounts)
             { [".tag"] = "root", ["root"] = ns }, AsciiJson));
     }
 
-    private static Task<HttpResponseMessage> Send(HttpRequestMessage request, CancellationToken cancellation) =>
-        OAuth.Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation);
+    private async Task<HttpResponseMessage> Send(HttpRequestMessage request, CancellationToken cancellation)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        return await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+    }
     private static IOException ApiError(HttpStatusCode status) => new(status switch
     {
         HttpStatusCode.Unauthorized => "Сеанс истёк. Подключите аккаунт заново.",
-        HttpStatusCode.Forbidden => "Провайдер запретил доступ к этому объекту.",
+        HttpStatusCode.Forbidden => "Провайдер запретил доступ. Для загрузки повторно подключите аккаунт с разрешением на запись.",
         HttpStatusCode.TooManyRequests => "Слишком много запросов к облаку. Повторите позднее.",
         _ => $"Облако вернуло HTTP {(int)status}."
     });

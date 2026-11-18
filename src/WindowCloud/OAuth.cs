@@ -175,9 +175,9 @@ internal static class OAuth
 
     private static string Scope(Provider provider) => provider switch
     {
-        Provider.GoogleDrive => "https://www.googleapis.com/auth/drive.readonly",
-        Provider.OneDrive => "https://graph.microsoft.com/Files.Read offline_access",
-        Provider.Dropbox => "account_info.read files.metadata.read files.content.read",
+        Provider.GoogleDrive => "https://www.googleapis.com/auth/drive",
+        Provider.OneDrive => "https://graph.microsoft.com/Files.ReadWrite offline_access",
+        Provider.Dropbox => "account_info.read files.metadata.read files.content.read files.content.write",
         _ => throw new ArgumentOutOfRangeException(nameof(provider))
     };
 

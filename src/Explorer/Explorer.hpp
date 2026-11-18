@@ -18,9 +18,11 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <string_view>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -58,7 +60,7 @@ struct Item {
     uint64_t modified{};
     std::wstring id, name, copyName;
     bool folder() const { return (flags & 1) != 0; }
-    bool copyable() const { return (flags & 2) != 0; }
+    bool copyable() const { return folder() || (flags & 2) != 0; }
 };
 
 class Pipe {
@@ -69,10 +71,12 @@ public:
     Pipe() = default;
     Pipe(const Pipe&) = delete;
     ~Pipe() { close(); }
-    bool open(REFGUID account, BYTE command, std::wstring_view id, uint64_t offset = 0);
+    bool open(REFGUID account, BYTE command, std::wstring_view id, uint64_t offset = 0, bool waitForResponse = true);
     void close() noexcept;
     bool read(void* buffer, DWORD length) { return transfer(buffer, length, true); }
     template<class T> bool read(T& value) { return read(&value, sizeof(value)); }
+    bool write(const void* buffer, DWORD length) { return transfer(const_cast<void*>(buffer), length, false); }
+    template<class T> bool write(const T& value) { return write(&value, sizeof(value)); }
     bool text(std::wstring& value);
 };
 
@@ -85,3 +89,4 @@ HRESULT makeShellDataObject(REFGUID account, std::vector<Item> items, PCIDLIST_A
 HRESULT makeStream(REFGUID account, const Item& item, REFIID iid, void** out);
 HRESULT makeMenu(REFGUID account, std::vector<Item> items, PCIDLIST_ABSOLUTE parent,
     UINT count, PCUITEMID_CHILD_ARRAY children, REFIID iid, void** out);
+HRESULT makeDropTarget(REFGUID account, std::wstring parent, PCIDLIST_ABSOLUTE location, REFIID iid, void** out);

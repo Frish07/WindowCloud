@@ -44,10 +44,16 @@ internal sealed class Tray : ApplicationContext
     public Tray(Icon icon)
     {
         cloud = new Cloud(accounts);
-        server = new ExplorerServer(accounts, cloud);
+        _ = dispatcher.Handle;
+        server = new ExplorerServer(accounts, cloud, (account, parent, paths, location) =>
+            dispatcher.InvokeAsync(() =>
+            {
+                var window = new UploadWindow(cloud, account, parent, paths, () =>
+                    ExplorerRegistration.Refresh(location));
+                window.Show();
+            }));
         try { registration = new ExplorerRegistration(server.PipeName); }
         catch { server.Dispose(); throw; }
-        _ = dispatcher.Handle;
         menu.Items.Add("Настройки", null, (_, _) => ShowSettings());
         menu.Items.Add("Выход", null, (_, _) => ExitThread());
         tray = new NotifyIcon { Text = "WindowCloud", Icon = icon, ContextMenuStrip = menu, Visible = true };
@@ -176,7 +182,7 @@ internal sealed class Settings : Form
         var provider = (Provider)providers.SelectedIndex;
         try
         {
-            var client = LoadDefault(provider);
+            var client = LoadDefault(provider) ?? accounts.Snapshot().FirstOrDefault(a => a.Provider == provider)?.Client;
             if (client is null)
             {
                 using var dialog = new RegistrationDialog(provider, accounts.Snapshot().FirstOrDefault(a => a.Provider == provider)?.Client);

@@ -9,14 +9,16 @@ internal sealed class ExplorerServer : IDisposable
 {
     private readonly Accounts accounts;
     private readonly Cloud cloud;
+    private readonly Func<Account, string, string[], byte[], Task> upload;
     private readonly CancellationTokenSource stop = new();
     private readonly SemaphoreSlim slots = new(16, 16);
     public string PipeName { get; } = "WindowCloud-" + Guid.NewGuid().ToString("N");
 
-    public ExplorerServer(Accounts accounts, Cloud cloud)
+    public ExplorerServer(Accounts accounts, Cloud cloud, Func<Account, string, string[], byte[], Task> upload)
     {
         this.accounts = accounts;
         this.cloud = cloud;
+        this.upload = upload;
         _ = Task.Run(Accept);
     }
 
@@ -125,6 +127,35 @@ internal sealed class ExplorerServer : IDisposable
                     break;
                 case 3:
                     OAuth.OpenBrowser(await cloud.BrowserLink(account, id, token));
+                    responding = true;
+                    await pipe.WriteAsync(new byte[] { 0 }, token);
+                    break;
+                case 5:
+                    Cloud.RequireWrite(account);
+                    var countBytes = new byte[4];
+                    await pipe.ReadExactlyAsync(countBytes, token);
+                    var pathCount = BitConverter.ToInt32(countBytes);
+                    if (pathCount <= 0 || pathCount > 10000) throw new InvalidDataException();
+                    var paths = new string[pathCount];
+                    for (var index = 0; index < pathCount; index++)
+                    {
+                        var sizeBytes = new byte[2];
+                        await pipe.ReadExactlyAsync(sizeBytes, token);
+                        var size = BitConverter.ToUInt16(sizeBytes);
+                        if (size == 0 || size % 2 != 0) throw new InvalidDataException();
+                        var pathBytes = new byte[size];
+                        await pipe.ReadExactlyAsync(pathBytes, token);
+                        var path = Encoding.Unicode.GetString(pathBytes);
+                        if (!Path.IsPathFullyQualified(path) || path.Contains('\0')) throw new InvalidDataException();
+                        paths[index] = Path.GetFullPath(path);
+                    }
+                    await pipe.ReadExactlyAsync(countBytes, token);
+                    var pidlSize = BitConverter.ToInt32(countBytes);
+                    if (pidlSize < 2 || pidlSize > 65536) throw new InvalidDataException();
+                    var pidl = new byte[pidlSize];
+                    await pipe.ReadExactlyAsync(pidl, token);
+                    ExplorerRegistration.ValidatePidl(pidl);
+                    await upload(account, id, paths, pidl);
                     responding = true;
                     await pipe.WriteAsync(new byte[] { 0 }, token);
                     break;

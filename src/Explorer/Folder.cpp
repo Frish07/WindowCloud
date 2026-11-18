@@ -1,7 +1,7 @@
 #include "Explorer.hpp"
 
 namespace {
-constexpr DWORD folderFlags = SFGAO_FOLDER | SFGAO_BROWSABLE | SFGAO_HASSUBFOLDER | SFGAO_READONLY;
+constexpr DWORD folderFlags = SFGAO_FOLDER | SFGAO_BROWSABLE | SFGAO_HASSUBFOLDER | SFGAO_CANCOPY | SFGAO_DROPTARGET;
 constexpr DWORD fileFlags = SFGAO_READONLY;
 
 DWORD attributes(const Item& item) {
@@ -218,7 +218,11 @@ public:
         *out = nullptr;
         return guarded([&] {
             Item item;
-            if (!decode(pidl, item) || !item.folder()) return E_NOINTERFACE;
+            if (!decode(pidl, item)) return E_INVALIDARG;
+            if (!item.folder()) {
+                if (ILNext(pidl)->mkid.cb) return E_NOINTERFACE;
+                return makeStream(account, item, iid, out);
+            }
             Pidl first(ILCloneFirst(pidl));
             if (!first) return E_OUTOFMEMORY;
             Pidl location(absolute ? ILCombine(absolute.get(), first.get()) : nullptr);
@@ -268,9 +272,18 @@ public:
             return MAKE_HRESULT(SEVERITY_SUCCESS, 0, static_cast<USHORT>(compare(order, 0)));
         });
     }
-    HRESULT STDMETHODCALLTYPE CreateViewObject(HWND, REFIID iid, void** out) override {
+    HRESULT STDMETHODCALLTYPE CreateViewObject(HWND window, REFIID iid, void** out) override {
         if (!out) return E_POINTER;
         *out = nullptr;
+        if (iid == IID_IDropTarget)
+            return guarded([&] { return makeDropTarget(account, parent, absolute.get(), iid, out); });
+        if (iid == IID_IContextMenu) {
+            DEFCONTEXTMENU context{};
+            context.hwnd = window;
+            context.pidlFolder = absolute.get();
+            context.psf = this;
+            return SHCreateDefaultContextMenu(&context, iid, out);
+        }
         if (iid != IID_IShellView) return E_NOINTERFACE;
         return guarded([&] {
             Pidl location(absolute ? ILCloneFull(absolute.get()) : nullptr);
@@ -299,10 +312,15 @@ public:
         if (!out) return E_POINTER;
         *out = nullptr;
         if (!count || !pidls || (iid != IID_IDataObject && iid != IID_IContextMenu &&
-            iid != IID_IExtractIconW && iid != IID_IExtractIconA)) return E_NOINTERFACE;
+            iid != IID_IExtractIconW && iid != IID_IExtractIconA && iid != IID_IDropTarget)) return E_NOINTERFACE;
         return guarded([&] {
             std::vector<Item> items(count);
             for (UINT i = 0; i < count; ++i) if (!decode(pidls[i], items[i])) return E_INVALIDARG;
+            if (iid == IID_IDropTarget) {
+                if (count != 1 || !items[0].folder()) return E_NOINTERFACE;
+                Pidl location(absolute ? ILCombine(absolute.get(), pidls[0]) : nullptr);
+                return makeDropTarget(account, items[0].id, location.get(), iid, out);
+            }
             if (iid == IID_IDataObject)
                 return makeShellDataObject(account, std::move(items), absolute.get(), count, pidls, iid, out);
             if (iid == IID_IContextMenu) return makeMenu(account, std::move(items), absolute.get(), count, pidls, iid, out);

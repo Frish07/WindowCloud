@@ -32,7 +32,22 @@ jobs:
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build portable ZIP
         shell: pwsh
-        run: ./build.ps1 -SelfContained
+        env:
+          WINDOWCLOUD_OAUTH_CLIENTS: ${{ vars.WINDOWCLOUD_OAUTH_CLIENTS }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWCLOUD_OAUTH_CLIENTS)) {
+            ./build.ps1 -SelfContained
+          } else {
+            $config = Join-Path $env:RUNNER_TEMP 'oauth-clients.json'
+            $env:WINDOWCLOUD_OAUTH_CLIENTS | Set-Content -LiteralPath $config -Encoding utf8
+            ./build.ps1 -SelfContained -OAuthClients $config
+          }
+      - name: Verify upload protocols and folder uploads
+        shell: pwsh
+        run: dotnet run --project tests/WindowCloud.Tests -c Release
+      - name: Verify File Explorer folder copy and upload target
+        shell: pwsh
+        run: ./tests/Test-Shell.ps1 -Archive ./artifacts/WindowCloud-win-x64-self-contained.zip
       - name: Launch and verify the extracted ZIP
         shell: pwsh
         run: ./tests/Test-Portable.ps1 -Archive ./artifacts/WindowCloud-win-x64-self-contained.zip

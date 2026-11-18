@@ -117,6 +117,31 @@ internal sealed class ExplorerRegistration : IDisposable
     private static nint ParseRoot(Guid id) =>
         SHParseDisplayName($"::{{20D04FE0-3AEA-1069-A2D8-08002B30309D}}\\::{id:B}", 0, out var pidl, 0, 0) == 0 ? pidl : 0;
 
+    internal static void ValidatePidl(byte[] pidl)
+    {
+        var offset = 0;
+        while (offset + 2 <= pidl.Length)
+        {
+            var size = BitConverter.ToUInt16(pidl, offset);
+            if (size == 0 && offset + 2 == pidl.Length) return;
+            if (size < 2 || size > pidl.Length - offset) break;
+            offset += size;
+        }
+        throw new InvalidDataException("Некорректный идентификатор папки Проводника.");
+    }
+
+    public static void Refresh(byte[] location)
+    {
+        ValidatePidl(location);
+        var pidl = Marshal.AllocCoTaskMem(location.Length);
+        try
+        {
+            Marshal.Copy(location, 0, pidl, location.Length);
+            SHChangeNotify(0x1000, 0x1000, pidl, 0);
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
     public static async Task<HashSet<Provider>> Check(Provider[] providers, CancellationToken cancellation)
     {
         if (providers.Length == 0 || !NetworkInterface.GetIsNetworkAvailable()) return [];

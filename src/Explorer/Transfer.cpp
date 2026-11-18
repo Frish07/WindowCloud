@@ -193,21 +193,60 @@ class ClipboardFiles final : public IDataObject, public IDataObjectAsyncCapabili
     std::atomic<BOOL> asynchronous{TRUE};
     std::atomic<BOOL> running{FALSE};
     IUnknown* marshaler{};
+    std::once_flag manifestOnce;
+    HRESULT manifestStatus = E_PENDING;
     const CLIPFORMAT descriptors = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW));
     const CLIPFORMAT contents = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILECONTENTS));
     const CLIPFORMAT effect = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT));
+    HRESULT expand(const std::vector<Item>& source, const std::wstring& parent, std::set<std::wstring>& ancestors,
+        std::vector<Item>& result) {
+        std::set<std::wstring> names;
+        for (auto item : source) {
+            if (!item.copyable()) return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+            auto name = safeName(item.copyName);
+            auto dot = item.folder() ? std::wstring::npos : name.find_last_of(L'.');
+            auto extension = dot == 0 || dot == std::wstring::npos ? L"" : name.substr(dot);
+            auto stem = name.substr(0, name.size() - extension.size());
+            auto folded = [](std::wstring text) {
+                CharUpperBuffW(text.data(), static_cast<DWORD>(text.size()));
+                return text;
+            };
+            for (unsigned suffix = 2; !names.insert(folded(name)).second; ++suffix)
+                name = stem + L" (" + std::to_wstring(suffix) + L")" + extension;
+            item.copyName = parent.empty() ? name : parent + L"\\" + name;
+            if (item.copyName.size() >= MAX_PATH) return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
+            result.push_back(item);
+            if (!item.folder()) continue;
+            if (!ancestors.insert(item.id).second) return HRESULT_FROM_WIN32(ERROR_CIRCULAR_DEPENDENCY);
+            std::vector<Pidl> children;
+            auto hr = list(account, item.id, children);
+            if (FAILED(hr)) return hr;
+            std::vector<Item> descendants;
+            for (const auto& child : children) {
+                Item descendant;
+                if (!decode(child.get(), descendant)) return E_INVALIDARG;
+                descendants.push_back(std::move(descendant));
+            }
+            hr = expand(descendants, item.copyName, ancestors, result);
+            ancestors.erase(item.id);
+            if (FAILED(hr)) return hr;
+        }
+        return S_OK;
+    }
+    HRESULT manifest() {
+        std::call_once(manifestOnce, [&] {
+            manifestStatus = guarded([&] {
+                std::vector<Item> expanded;
+                std::set<std::wstring> ancestors;
+                auto hr = expand(items, L"", ancestors, expanded);
+                if (SUCCEEDED(hr)) items = std::move(expanded);
+                return hr;
+            });
+        });
+        return manifestStatus;
+    }
 public:
     ClipboardFiles(REFGUID account, std::vector<Item> items) : account(account), items(std::move(items)) {
-        for (auto it = this->items.begin(); it != this->items.end(); ++it) {
-            auto name = safeName(it->copyName);
-            const auto dot = name.find_last_of(L'.');
-            const auto suffix = dot == 0 || dot == std::wstring::npos ? L"" : name.substr(dot);
-            const auto stem = name.substr(0, name.size() - suffix.size());
-            for (unsigned index = 2; std::any_of(this->items.begin(), it, [&](const Item& previous) {
-                return !_wcsicmp(previous.copyName.c_str(), name.c_str());
-            }); ++index) name = stem + L" (" + std::to_wstring(index) + L")" + suffix;
-            it->copyName = std::move(name);
-        }
         CoCreateFreeThreadedMarshaler(static_cast<IDataObject*>(this), &marshaler);
     }
     ~ClipboardFiles() override { if (marshaler) marshaler->Release(); }
@@ -223,12 +262,20 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        return guarded([&] { return getData(format, medium); });
+    }
+    HRESULT getData(FORMATETC* format, STGMEDIUM* medium) {
         if (!medium) return E_POINTER;
         *medium = {};
         auto hr = QueryGetData(format);
         if (FAILED(hr)) return hr;
+        if (format->cfFormat != effect) {
+            hr = manifest();
+            if (FAILED(hr)) return hr;
+        }
         if (format->cfFormat == contents) {
             const auto index = format->lindex < 0 ? 0 : format->lindex;
+            if (static_cast<size_t>(index) >= items.size() || items[index].folder()) return DV_E_LINDEX;
             hr = makeStream(account, items[index], IID_IStream, reinterpret_cast<void**>(&medium->pstm));
             if (SUCCEEDED(hr)) medium->tymed = TYMED_ISTREAM;
             return hr;
@@ -246,8 +293,8 @@ public:
             for (const auto& item : items) {
                 auto& entry = *entries++;
                 entry.dwFlags = FD_ATTRIBUTES | FD_UNICODE | FD_PROGRESSUI;
-                entry.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
-                if (item.size >= 0) {
+                entry.dwFileAttributes = item.folder() ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+                if (!item.folder() && item.size >= 0) {
                     entry.dwFlags |= FD_FILESIZE;
                     entry.nFileSizeLow = static_cast<DWORD>(item.size);
                     entry.nFileSizeHigh = static_cast<DWORD>(item.size >> 32);
@@ -270,8 +317,7 @@ public:
         if (format->dwAspect != DVASPECT_CONTENT) return DV_E_DVASPECT;
         if (format->cfFormat == contents) {
             if (!(format->tymed & TYMED_ISTREAM)) return DV_E_TYMED;
-            return format->lindex == -1 || (format->lindex >= 0 && static_cast<size_t>(format->lindex) < items.size())
-                ? S_OK : DV_E_LINDEX;
+            return format->lindex >= -1 ? S_OK : DV_E_LINDEX;
         }
         if (format->cfFormat != descriptors && format->cfFormat != effect) return DV_E_FORMATETC;
         return format->tymed & TYMED_HGLOBAL ? S_OK : DV_E_TYMED;
@@ -327,7 +373,7 @@ HRESULT makeShellDataObject(REFGUID account, std::vector<Item> items, PCIDLIST_A
 }
 
 HRESULT makeStream(REFGUID account, const Item& item, REFIID iid, void** out) {
-    if (!item.copyable()) return E_NOINTERFACE;
+    if (!item.copyable() || item.folder()) return E_NOINTERFACE;
     return guarded([&] {
         auto stream = new DownloadStream(account, item);
         auto hr = stream->QueryInterface(iid, out);
