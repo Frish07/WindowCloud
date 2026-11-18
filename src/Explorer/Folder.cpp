@@ -319,6 +319,7 @@ public:
             if (iid == IID_IDropTarget) {
                 if (count != 1 || !items[0].folder()) return E_NOINTERFACE;
                 Pidl location(absolute ? ILCombine(absolute.get(), pidls[0]) : nullptr);
+                if (absolute && !location) return E_OUTOFMEMORY;
                 return makeDropTarget(account, items[0].id, location.get(), iid, out);
             }
             if (iid == IID_IDataObject)

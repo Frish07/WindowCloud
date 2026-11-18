@@ -60,6 +60,15 @@ internal sealed partial class Cloud
     private async Task GoogleUpload(FileStream file, string parent, string name, Guid account, string token,
         Action<long, long> progress, CancellationToken cancellation)
     {
+        if (file.Length == 0)
+        {
+            using var empty = JsonRequest(HttpMethod.Post, Google + "files",
+                new { name, parents = new[] { parent }, mimeType = "application/octet-stream" }, token);
+            using var result = await Send(empty, cancellation);
+            EnsureSuccess(result);
+            progress(0, 0);
+            return;
+        }
         using var start = JsonRequest(HttpMethod.Post,
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
             new { name, parents = new[] { parent } }, token);

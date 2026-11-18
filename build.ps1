@@ -46,7 +46,7 @@ try {
     if ($LASTEXITCODE) { throw "dotnet publish failed ($LASTEXITCODE)." }
 
     $native = Join-Path $root 'src/Explorer'
-$sources = @('Folder.cpp', 'Menu.cpp', 'Pipe.cpp', 'Transfer.cpp', 'DropTarget.cpp', 'Explorer.def') |
+    $sources = @('Folder.cpp', 'Menu.cpp', 'Pipe.cpp', 'Transfer.cpp', 'DropTarget.cpp', 'Explorer.def') |
         ForEach-Object { Join-Path $native $_ }
     & $zigCommand c++ -target x86_64-windows-gnu -std=c++20 -O2 -shared -s -DUNICODE -D_UNICODE @sources `
         -lole32 -loleaut32 -lshell32 -lshlwapi -luuid -ladvapi32 -luser32 `

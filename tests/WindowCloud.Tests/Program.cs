@@ -196,6 +196,12 @@ sealed class CloudHandler(Provider provider) : HttpMessageHandler
         }
         if (uri.AbsolutePath.EndsWith("get_metadata")) return Json(JsonSerializer.Serialize(new { path_display = lastPath }));
         using var metadata = JsonDocument.Parse(body);
+        if (provider == Provider.GoogleDrive &&
+            metadata.RootElement.TryGetProperty("mimeType", out var mime) && mime.GetString() == "application/octet-stream")
+        {
+            Commits++;
+            return Json("{\"id\":\"empty\"}");
+        }
         string name;
         if (provider == Provider.Dropbox)
         {
